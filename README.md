@@ -3,8 +3,9 @@
 ## What is EasySeedbox?
 EasySeedbox is an unobtrusive seedbox installation script for Ubuntu and Debian systems.
 
-
-
+## What's new in the Plus version?
+Now transmisson is accompanied by h5ai,
+make it easier to transfer files to your PC.
 
 #### Supported Operating Systems
 - Ubuntu 12.04+
@@ -23,4 +24,4 @@ EasySeedbox is an unobtrusive seedbox installation script for Ubuntu and Debian 
 - [ ] Public download folder via nginx reverse proxy.
 
 ## How to install
-	wget https://git.io/vDstU -O transmission-install.sh && sh transmission-install.sh
+	wget https://git.io/Jv3Hr -O transmission-h5ai-install.sh && sh transmission-h5ai-install.sh
