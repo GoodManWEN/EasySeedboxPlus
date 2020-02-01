@@ -2,7 +2,6 @@
 PATH=/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin:/usr/local/sbin:~/bin
 export PATH
 
-
 #################################################################################
 #Script Console Colors - Thanks quickbox !
 black=$(tput setaf 0); red=$(tput setaf 1); green=$(tput setaf 2); yellow=$(tput setaf 3);
@@ -31,12 +30,12 @@ cat << "EOF"
 EOF
 
 echo "${normal}========================================================================="
-echo "${cyan}Easy Seedbox installer - Transmission${normal}"
+echo "${cyan}Easy Seedbox installer - Transmission & h5ai${normal}"
 echo "========================================================================="
 echo "${bold}Description:${normal}"
 echo " Installs Transmission and WebUI to create a simple seedbox on any"
 echo " Ubuntu or Debian VPS."
-echo "\n${dim}Script written by ${bold}swain.${normal}"
+echo " ${dim}Script written by ${bold}swain & WEN.${normal}"
 echo "========================================================================="
 
 
@@ -45,16 +44,19 @@ if [ "$IP" = "" ]; then
     IP=$(wget -qO- ipv4.icanhazip.com)
 fi
 
-
 #Set var for settingsfile.
 SETTINGSFILE="/etc/transmission-daemon/settings.json"
+SETTINGSFILECADDY="/etc/caddy/Caddyfile"
+PHPCONF="/etc/php/7.0/fpm/pool.d/www.conf"
+SUPERVISORCONF="/etc/supervisor/conf.d/caddy.conf"
+H5AIINDEX="/home/downloads/_h5ai/public/index.php"
 
 
 cur_dir=$(pwd)
 
 
 accepted="N"
-echo "Would you like to install Transmission?:"
+echo "Would you like to install Transmission + h5ai?:"
 
 #read user input
 read -p "(${green}Y${normal}/${red}N${normal}):" accepted
@@ -68,29 +70,44 @@ fi
 echo "===============================WebUI Info====================================="
 username="user"
 echo "Please input your requested WebUI username for the seedbox:"
-read -p "(Default user:user):" username
+read -p "(Default user:admin):" username
 if [ "$username" = "" ]; then
-    username="user"
+    username="admin"
 fi
 echo "==========================="
-echo " Username = $username"
+echo " Username = "${username}
 echo "==========================="
 pass="pass"
 echo "Please input your requested WebUI password for the seedbox:"
 read -p "(Default Password:pass):" pass
 if [ "$pass" = "" ]; then
-    username="pass"
+    pass="pass"
 fi
 echo "==========================="
-echo " Password = $pass"
+echo " Password = "${pass}
 echo "==========================="
 
 
 echo "============================Starting Install=================================="
-apt-get -y  update
-apt-get -y install transmission-daemon curl
-
+apt-get -y update
+apt-get -y install software-properties-common
+add-apt-repository -y ppa:ondrej/php
+apt-get -y update
+apt-get -y install transmission-daemon curl unzip supervisor php7.0 php7.0-fpm php7.0-xml php7.0-zip php7.0-bcmath php7.0-curl php7.0-mbstring php7.0-gd
+curl https://getcaddy.com | bash -s personal 
 echo "============================making directories================================"
+if [ ! -d "/etc/caddy" ]; then
+    mkdir /etc/caddy
+    echo "/etc/caddy  [created]"
+else
+    echo "/etc/caddy [found]"
+fi
+if [ ! -d "/run/php" ]; then
+    mkdir /run/php
+    echo "/run/php  [created]"
+else
+    echo "/run/php [found]"
+fi
 if [ ! -d "/home/downloads" ]; then
     mkdir /home/downloads
     echo "/home/downloads  [created]"
@@ -119,15 +136,54 @@ if [ ! -d "/home/downloads/downloaded" ]; then
 else
     echo "/home/downloads/downloaded [found]"
 fi
+wget -O /home/downloads/h5ai.zip https://release.larsjung.de/h5ai/h5ai-0.29.2.zip
+unzip -o -d /home/downloads /home/downloads/h5ai.zip
+
 echo "============================Permissions======================================="
 usermod -a -G debian-transmission root
 chgrp -R debian-transmission /home/downloads
-chmod -R 770 /home/downloads
+chmod -R 777 /home/downloads
+chown -R debian-transmission /home/downloads
 cd $cur_dir
 echo "============================Updating Config==================================="
 
+truncate -s0 $SETTINGSFILECADDY
 truncate -s0 $SETTINGSFILE
 
+# pfp-fpm part
+sed -i 's#listen = /run/php/php7.0-fpm.sock#listen = 127.0.0.1:9000#g' $PHPCONF 
+
+# caddy part
+echo ${IP}':9090 {' > $SETTINGSFILECADDY
+cat >> $SETTINGSFILECADDY <<- EOM
+    root /home/downloads/
+    gzip
+    
+    fastcgi / 127.0.0.1:9000 php
+    rewrite  {
+            if {path} ends_with /
+        to {dir}/index.html {dir}/index.php /_h5ai/public/index.php
+    }
+}
+EOM
+
+# supervisor
+cat > $SUPERVISORCONF <<- EOM
+[program:caddy]
+
+command=caddy
+directory=/etc/caddy
+autostart=true
+startsecs=10
+autorestart = true
+startretries=3
+user=debian-transmission
+stdout_logfile_maxbytes=10MB
+stdout_logfile_backups = 10
+stdout_logfile = /var/log/caddylog.log
+EOM
+
+# transimssion part
 cat > $SETTINGSFILE <<- EOM
 {
 "alt-speed-down": 50,
@@ -261,20 +317,47 @@ cat > $SETTINGSFILE <<- EOM
 }
 EOM
 
+# h5ai auth part
+sed -i '2i\auth();' $H5AIINDEX
+echo "function auth ()" >> $H5AIINDEX
+echo "{" >> $H5AIINDEX
+echo '$valid_passwords = array ("'${username}'" => "'${pass}'");' >> $H5AIINDEX
+cat >> $H5AIINDEX <<- EOM
+        \$valid_users = array_keys(\$valid_passwords);
+
+        \$user = \$_SERVER['PHP_AUTH_USER'];
+        \$pass = \$_SERVER['PHP_AUTH_PW'];
+
+        \$validated = (in_array(\$user, \$valid_users)) && (\$pass == \$valid_passwords[\$user]);
+
+        if (!\$validated) {
+          header('WWW-Authenticate: Basic realm="My Realm"');
+          header('HTTP/1.0 401 Unauthorized');
+          die ("Not authorized");
+        }
+}
+EOM
 
 sed -i 's/uzr/'$username'/g' /etc/transmission-daemon/settings.json
 sed -i 's/pzw/'$pass'/g' /etc/transmission-daemon/settings.json
-echo "============================Restarting Transmission==========================="
+echo "============================Restarting Services==========================="
 service transmission-daemon reload
-clear
+service php7.0-fpm restart
+ulimit -n 8192
+supervisorctl reload
+# clear
 echo "=============================================================================="
 echo "                   Seedbox Installed successfully! "
 echo "=============================================================================="
-echo " WebUI URL: http://$IP:9091"
+echo " Transmission WebUI URL:${blue} http://"$IP":9091${normal}"
+echo "         h5ai WebUI URL:${blue} http://"$IP":9090${normal}"
+echo "${green} ** Notice **: For initialization ,You need to"
+echo " visit ${blue}http://"$IP":9090/_h5ai/public/index.php${normal}"
+echo "${green} first and click login with empty password. Then you can enjoy h5ai${normal}"
 echo " WebUI Username: $username"
 echo " WebUI Password: $pass"
 echo " Download Location: /home/downloads"
 echo ""
 echo "=============================================================================="
-echo "                            Script by swain.pw                                "
+echo "                            Script by swain & WEN.pw                          "
 echo "=============================================================================="
